@@ -35681,65 +35681,98 @@ exports.getPRContext = getPRContext;
 exports.postReviewComment = postReviewComment;
 const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
-/**
- * Collect all the information we need about the current PR.
- * Reads only contents + pull-requests (write for posting comments).
- */
 async function getPRContext(token, maxDiffLines) {
     const octokit = github.getOctokit(token);
     const ctx = github.context;
-    if (!ctx.payload.pull_request) {
-        throw new Error('VibeGuard AI must be triggered on a pull_request event.');
+    let owner;
+    let repo;
+    let prNumber;
+    let prTitle;
+    let prBody;
+    let commitMessages;
+    let diff;
+    owner = ctx.repo.owner;
+    repo = ctx.repo.repo;
+    // ── Pull Request event ───────────────────────────────────────────────────
+    if (ctx.payload.pull_request) {
+        prNumber = ctx.payload.pull_request.number;
+        prTitle = ctx.payload.pull_request.title ?? '';
+        prBody = ctx.payload.pull_request.body ?? '';
+        const commitsResp = await octokit.rest.pulls.listCommits({
+            owner, repo,
+            pull_number: prNumber,
+            per_page: 20,
+        });
+        commitMessages = commitsResp.data.map((c) => c.commit.message.split('\n')[0]);
+        const diffResp = await octokit.rest.pulls.get({
+            owner, repo,
+            pull_number: prNumber,
+            mediaType: { format: 'diff' },
+        });
+        // @ts-expect-error octokit returns string for diff media type
+        diff = diffResp.data;
+        // ── Push event ───────────────────────────────────────────────────────────
     }
-    const { owner, repo } = ctx.repo;
-    const prNumber = ctx.payload.pull_request.number;
-    const prTitle = ctx.payload.pull_request.title ?? '';
-    const prBody = ctx.payload.pull_request.body ?? '';
-    // Fetch commit messages for goal inference
-    const commitsResp = await octokit.rest.pulls.listCommits({
-        owner,
-        repo,
-        pull_number: prNumber,
-        per_page: 20,
-    });
-    const commitMessages = commitsResp.data.map((c) => c.commit.message.split('\n')[0]);
-    // Fetch the diff (only changed lines)
-    const diffResp = await octokit.rest.pulls.get({
-        owner,
-        repo,
-        pull_number: prNumber,
-        mediaType: { format: 'diff' },
-    });
-    // @ts-expect-error octokit returns string for diff media type
-    let diff = diffResp.data;
-    // Chunk large diffs to stay within token limits
+    else if (ctx.payload.commits) {
+        prNumber = 0;
+        prTitle = ctx.payload.head_commit?.message ?? 'Push event';
+        prBody = '';
+        commitMessages = ctx.payload.commits
+            .map((c) => c.message.split('\n')[0]);
+        // Build a diff from the push by comparing head to its parent
+        const headSha = ctx.sha;
+        const compareResp = await octokit.rest.repos.compareCommitsWithBasehead({
+            owner,
+            repo,
+            basehead: `${headSha}^...${headSha}`,
+        });
+        // Build a simple diff from the file list
+        const files = compareResp.data.files ?? [];
+        diff = files
+            .map((f) => {
+            const header = `diff --git a/${f.filename} b/${f.filename}\n--- a/${f.filename}\n+++ b/${f.filename}`;
+            return `${header}\n${f.patch ?? '(binary or no patch)'}`;
+        })
+            .join('\n\n');
+    }
+    else {
+        throw new Error('VibeGuard AI must be triggered on a pull_request or push event.');
+    }
+    // Chunk large diffs
     const lines = diff.split('\n');
     if (lines.length > maxDiffLines) {
-        core.warning(`Diff is ${lines.length} lines — truncating to first ${maxDiffLines} lines to stay within token limits.`);
-        diff = lines.slice(0, maxDiffLines).join('\n') + '\n\n[...diff truncated for token safety...]';
+        core.warning(`Diff is ${lines.length} lines — truncating to first ${maxDiffLines} lines.`);
+        diff = lines.slice(0, maxDiffLines).join('\n') + '\n\n[...diff truncated...]';
     }
     return { owner, repo, prNumber, prTitle, prBody, commitMessages, diff };
 }
-/**
- * Post or update a PR comment with the review markdown.
- * Looks for an existing VibeGuard comment and updates it (avoids spam).
- */
 async function postReviewComment(token, owner, repo, prNumber, body) {
     const octokit = github.getOctokit(token);
+    const ctx = github.context;
     const MARKER = '<!-- vibeguard-ai-review -->';
-    // Look for existing comment from this bot
+    const fullBody = `${MARKER}\n${body}`;
+    // For push events (no PR), post as a commit comment
+    if (prNumber === 0) {
+        const commitSha = ctx.sha;
+        const created = await octokit.rest.repos.createCommitComment({
+            owner,
+            repo,
+            commit_sha: commitSha,
+            body: fullBody,
+        });
+        core.info(`Created commit comment: ${created.data.html_url}`);
+        return created.data.html_url;
+    }
+    // For PR events, update or create PR comment
     const comments = await octokit.rest.issues.listComments({
-        owner,
-        repo,
+        owner, repo,
         issue_number: prNumber,
         per_page: 100,
     });
     const existing = comments.data.find((c) => c.body?.includes(MARKER));
-    const fullBody = `${MARKER}\n${body}`;
     if (existing) {
         const updated = await octokit.rest.issues.updateComment({
-            owner,
-            repo,
+            owner, repo,
             comment_id: existing.id,
             body: fullBody,
         });
@@ -35748,8 +35781,7 @@ async function postReviewComment(token, owner, repo, prNumber, body) {
     }
     else {
         const created = await octokit.rest.issues.createComment({
-            owner,
-            repo,
+            owner, repo,
             issue_number: prNumber,
             body: fullBody,
         });
