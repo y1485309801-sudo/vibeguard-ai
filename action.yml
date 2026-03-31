@@ -1,0 +1,56 @@
+name: 'VibeGuard AI'
+description: '🛡️ Goal-oriented code reflection for vibe coders. Detects security & quality issues in AI-generated code and provides copy-paste fix prompts.'
+author: 'VibeGuard AI'
+
+branding:
+  icon: 'shield'
+  color: 'purple'
+
+inputs:
+  github_token:
+    description: 'GitHub token for reading diffs and posting PR comments'
+    required: true
+    default: ${{ github.token }}
+
+  llm_base_url:
+    description: 'Base URL for OpenAI-compatible LLM endpoint (e.g. http://localhost:11434/v1 for Ollama, or https://api.openai.com/v1)'
+    required: false
+    default: 'http://localhost:11434/v1'
+
+  llm_api_key:
+    description: 'API key for the LLM endpoint (leave empty for local Ollama)'
+    required: false
+    default: 'ollama'
+
+  model:
+    description: 'LLM model to use (e.g. ollama/llama3.2, gpt-4o, deepseek-chat)'
+    required: false
+    default: 'llama3.2'
+
+  focus:
+    description: 'Review focus: safety | maintainability | all'
+    required: false
+    default: 'all'
+
+  include_prompts:
+    description: 'Whether to include copy-paste fix prompts for High/Critical issues'
+    required: false
+    default: 'true'
+
+  max_tokens:
+    description: 'Maximum tokens for LLM response'
+    required: false
+    default: '4096'
+
+  max_diff_lines:
+    description: 'Maximum diff lines to send per chunk (prevents token overflow)'
+    required: false
+    default: '500'
+
+outputs:
+  comment_url:
+    description: 'URL of the posted PR review comment'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'

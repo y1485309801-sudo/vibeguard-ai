@@ -1,0 +1,61 @@
+# ── VibeGuard AI — Drop this file into .github/workflows/ ───────────────────
+# One-click setup: just add your LLM API key as a GitHub Secret and go!
+#
+# Supported LLM providers:
+#   • Ollama (local, free, private) — default
+#   • OpenAI (GPT-4o, GPT-4-turbo)
+#   • Deepseek
+#   • Any OpenAI-compatible endpoint
+
+name: VibeGuard AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  # Optional: also run on direct pushes to main
+  # push:
+  #   branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  vibeguard-review:
+    name: 🛡️ VibeGuard AI Review
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Run VibeGuard AI
+        uses: vibeguard-ai/vibeguard-ai@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+          # ── LLM Configuration ───────────────────────────────────────────────
+          # OPTION A: Local Ollama (private, free, requires self-hosted runner)
+          # llm_base_url: 'http://localhost:11434/v1'
+          # llm_api_key: 'ollama'
+          # model: 'llama3.2'
+
+          # OPTION B: OpenAI (cloud, requires API key secret)
+          llm_base_url: 'https://api.openai.com/v1'
+          llm_api_key: ${{ secrets.OPENAI_API_KEY }}
+          model: 'gpt-4o'
+
+          # OPTION C: Deepseek (cheaper cloud alternative)
+          # llm_base_url: 'https://api.deepseek.com/v1'
+          # llm_api_key: ${{ secrets.DEEPSEEK_API_KEY }}
+          # model: 'deepseek-chat'
+
+          # ── Review Settings ─────────────────────────────────────────────────
+          # Focus area: 'all' | 'safety' | 'maintainability'
+          focus: 'all'
+
+          # Include copy-paste fix prompts for Critical/High issues
+          include_prompts: 'true'
+
+          # Token limit for LLM response
+          max_tokens: '4096'
+
+          # Max diff lines to analyze (prevents token overflow on large PRs)
+          max_diff_lines: '500'
