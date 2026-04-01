@@ -35696,7 +35696,6 @@ async function getPRContext(token, maxDiffLines) {
     let headSha;
     owner = ctx.repo.owner;
     repo = ctx.repo.repo;
-    // ── Pull Request event ───────────────────────────────────────────────────
     if (ctx.payload.pull_request) {
         prNumber = ctx.payload.pull_request.number;
         prTitle = ctx.payload.pull_request.title ?? '';
@@ -35714,7 +35713,6 @@ async function getPRContext(token, maxDiffLines) {
             per_page: 100,
         });
         diff = await buildDiffFromFiles(octokit, owner, repo, filesResp.data, maxDiffLines, headSha);
-        // ── Push event ───────────────────────────────────────────────────────────
     }
     else if (ctx.payload.commits) {
         prNumber = 0;
@@ -35738,8 +35736,7 @@ async function buildDiffFromFiles(
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 octokit, owner, repo, 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-files, maxDiffLines, headSha // ← use the commit sha, not the blob sha
-) {
+files, maxDiffLines, headSha) {
     const parts = [];
     let totalLines = 0;
     let fileCount = 0;
@@ -35751,21 +35748,19 @@ files, maxDiffLines, headSha // ← use the commit sha, not the blob sha
         }
         const header = `diff --git a/${file.filename} b/${file.filename}\n--- a/${file.filename}\n+++ b/${file.filename}`;
         if (file.patch && file.patch.length < MAX_FILE_SIZE) {
-            // Normal case: patch available and not too large
             const fileLines = file.patch.split('\n');
             totalLines += fileLines.length;
             parts.push(`${header}\n${file.patch}`);
             fileCount++;
         }
         else if (!file.patch) {
-            // File too large for GitHub diff API — fetch content using commit sha (not blob sha!)
-            core.info(`File ${file.filename} has no patch (too large) — fetching via commit ref ${headSha.slice(0, 7)}...`);
+            core.info(`File ${file.filename} has no patch — fetching via commit ref ${headSha.slice(0, 7)}...`);
             try {
                 const contentResp = await octokit.rest.repos.getContent({
                     owner,
                     repo,
                     path: file.filename,
-                    ref: headSha, // ← correct: use commit sha
+                    ref: headSha,
                 });
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 const data = contentResp.data;
@@ -35778,7 +35773,7 @@ files, maxDiffLines, headSha // ← use the commit sha, not the blob sha
                 totalLines += truncated.split('\n').length;
                 parts.push(`${header}\n@@ -0,0 +1,${lines.length} @@\n${addedLines}`);
                 fileCount++;
-                core.info(`✅ Fetched ${lines.length} lines from ${file.filename}`);
+                core.info(`Fetched ${lines.length} lines from ${file.filename}`);
             }
             catch (err) {
                 core.warning(`Could not fetch content for ${file.filename}: ${err}`);
@@ -35787,7 +35782,6 @@ files, maxDiffLines, headSha // ← use the commit sha, not the blob sha
             }
         }
         else {
-            // Patch exists but very large — truncate it
             core.warning(`File ${file.filename} patch is very large — truncating.`);
             const truncatedPatch = file.patch.split('\n').slice(0, maxDiffLines).join('\n');
             parts.push(`${header}\n${truncatedPatch}\n[...truncated...]`);
@@ -36167,47 +36161,76 @@ const SEVERITY_EMOJI = {
     Low: '🔵',
 };
 const SCORE_EMOJI = (n) => (n >= 80 ? '✅' : n >= 60 ? '⚠️' : '❌');
-/**
- * Convert a ReviewResult into a structured Markdown PR comment.
- * Strictly follows the example output format from the PRD.
- */
 function renderMarkdown(result, includePrompts) {
     const lines = [];
-    // ── Header ─────────────────────────────────────────────────────────────────
-    lines.push('## 🛡️ VibeGuard AI — Code Reflection Report');
+    const criticalAndHigh = result.issues.filter((i) => i.severity === 'Critical' || i.severity === 'High');
+    const topIssue = criticalAndHigh[0];
+    // ── Hero Banner ─────────────────────────────────────────────────────────
+    if (topIssue) {
+        const emoji = SEVERITY_EMOJI[topIssue.severity];
+        lines.push(`## ${emoji} This code works — but has a problem that needs fixing`);
+        lines.push('');
+        lines.push(`> **${topIssue.title}**`);
+        lines.push(`> ${topIssue.description}`);
+        lines.push('');
+    }
+    else {
+        lines.push('## ✅ This code looks good!');
+        lines.push('');
+        lines.push('> No critical or high severity issues found. Nice work! 🎉');
+        lines.push('');
+    }
+    // ── Top Fix Prompt (above the fold) ─────────────────────────────────────
+    if (topIssue && includePrompts && topIssue.fixPrompt) {
+        lines.push('### 🔥 Fix it with this prompt — copy and paste into Claude or Cursor');
+        lines.push('');
+        lines.push('```');
+        lines.push(topIssue.fixPrompt);
+        lines.push('```');
+        lines.push('');
+        lines.push('---');
+        lines.push('');
+    }
+    // ── AI wrote this → VibeGuard noticed ────────────────────────────────────
+    if (topIssue && topIssue.codeSnippet && topIssue.codeSnippet !== '(see diff for details)') {
+        lines.push('<details>');
+        lines.push('<summary>🤖 <strong>AI wrote this → VibeGuard noticed a problem</strong></summary>');
+        lines.push('');
+        lines.push('**🤖 AI generated this code:**');
+        lines.push('```');
+        lines.push(topIssue.codeSnippet);
+        lines.push('```');
+        lines.push('');
+        lines.push(`**🧠 VibeGuard noticed:** ${topIssue.riskImpact}`);
+        lines.push('');
+        lines.push(`**🎯 Why it matters for your goal:** ${topIssue.goalRelation}`);
+        lines.push('');
+        lines.push('</details>');
+        lines.push('');
+        lines.push('---');
+        lines.push('');
+    }
+    // ── Full Report (collapsed) ──────────────────────────────────────────────
+    lines.push('<details>');
+    lines.push('<summary>📊 <strong>Full Report — Scores, All Issues & Details</strong></summary>');
     lines.push('');
-    lines.push('> 🤖 This is an educational review, not a judgment. Think of it as a knowledgeable friend flagging things before you ship. All findings are suggestions — **you make the final call**.');
-    lines.push('');
-    // ── Inferred Goal ──────────────────────────────────────────────────────────
-    lines.push('### 🎯 Inferred User Goal');
+    lines.push('### 🎯 Inferred Goal');
     lines.push(result.inferredGoal);
     lines.push('');
-    // ── Quality Score ──────────────────────────────────────────────────────────
-    lines.push('### 📊 Overall Quality Score');
+    lines.push('### 📊 Quality Score');
     lines.push('');
     lines.push(renderScoreTable(result.score));
     lines.push('');
-    // ── Top 3 Risks ────────────────────────────────────────────────────────────
     if (result.top3Risks.length > 0) {
-        lines.push('### ⚡ Top 3 Risks at a Glance');
+        lines.push('### ⚡ Top Risks');
         for (const risk of result.top3Risks.slice(0, 3)) {
             lines.push(`- ${risk}`);
         }
         lines.push('');
     }
-    // ── Issues ─────────────────────────────────────────────────────────────────
-    if (result.issues.length === 0) {
-        lines.push('### ✅ No Issues Found');
+    if (result.issues.length > 0) {
+        lines.push('### 🔍 All Issues');
         lines.push('');
-        lines.push('Great job! No significant security or quality issues were detected in this diff. Keep it up! 🎉');
-        lines.push('');
-    }
-    else {
-        lines.push('---');
-        lines.push('');
-        lines.push('## 🔍 Detailed Issues');
-        lines.push('');
-        // Group by severity
         const order = ['Critical', 'High', 'Medium', 'Low'];
         for (const severity of order) {
             const group = result.issues.filter((i) => i.severity === severity);
@@ -36218,20 +36241,12 @@ function renderMarkdown(result, includePrompts) {
             }
         }
     }
-    // ── Footer ─────────────────────────────────────────────────────────────────
-    lines.push('---');
-    lines.push('');
-    lines.push('<details>');
-    lines.push('<summary>💡 How to use the fix prompts</summary>');
-    lines.push('');
-    lines.push('1. Copy the **Fix Prompt** for an issue');
-    lines.push('2. Open Claude, Cursor, or ChatGPT');
-    lines.push('3. Paste the prompt and add your problematic code at the bottom');
-    lines.push('4. Apply the suggested fix and push a new commit');
-    lines.push('');
     lines.push('</details>');
     lines.push('');
-    lines.push(`*Generated by [VibeGuard AI](https://github.com/vibeguard-ai/vibeguard-ai) — open-source, local-LLM-first code reflection for vibe coders.*`);
+    // ── Footer ───────────────────────────────────────────────────────────────
+    lines.push('---');
+    lines.push('');
+    lines.push('> 🤖 Educational review by [VibeGuard AI](https://github.com/y1485309801-sudo/vibeguard-ai) — all findings are suggestions, **you make the final call**.');
     return lines.join('\n');
 }
 function renderScoreTable(score) {
@@ -36246,32 +36261,29 @@ function renderScoreTable(score) {
 function renderIssue(issue, num, includePrompts) {
     const emoji = SEVERITY_EMOJI[issue.severity] ?? '⚪';
     const lines = [];
-    lines.push(`### ${emoji} ${issue.severity} Issue ${num}: ${issue.title}`);
+    lines.push(`#### ${emoji} ${issue.severity} Issue ${num}: ${issue.title}`);
     lines.push('');
     lines.push(`**📍 Location:** \`${issue.codeLocation}\``);
     lines.push('');
-    lines.push(`**📝 What's happening:**`);
-    lines.push(issue.description);
+    lines.push(`**📝 What's happening:** ${issue.description}`);
     lines.push('');
-    lines.push(`**💥 What could go wrong:**`);
-    lines.push(issue.riskImpact);
+    lines.push(`**💥 What could go wrong:** ${issue.riskImpact}`);
     lines.push('');
-    lines.push(`**🎯 Impact on your goal:**`);
-    lines.push(issue.goalRelation);
+    lines.push(`**🎯 Impact on your goal:** ${issue.goalRelation}`);
     lines.push('');
     if (issue.codeSnippet && issue.codeSnippet !== '(see diff for details)') {
-        lines.push(`**🔎 Problematic code:**`);
+        lines.push('**🤖 AI wrote this → VibeGuard noticed:**');
         lines.push('```');
         lines.push(issue.codeSnippet);
         lines.push('```');
         lines.push('');
     }
-    // Fix prompt — only for Critical/High if enabled
+    // Critical, High, Medium all get fix prompts; Low does not
     if (includePrompts &&
         issue.fixPrompt &&
-        (issue.severity === 'Critical' || issue.severity === 'High')) {
+        (issue.severity === 'Critical' || issue.severity === 'High' || issue.severity === 'Medium')) {
         lines.push('<details>');
-        lines.push('<summary>🔧 <strong>Copy-Paste Fix Prompt for Claude/Cursor</strong></summary>');
+        lines.push('<summary>🔧 <strong>Fix Prompt for Claude/Cursor</strong></summary>');
         lines.push('');
         lines.push('```');
         lines.push(issue.fixPrompt);
@@ -36299,7 +36311,7 @@ exports.buildUserMessage = buildUserMessage;
 function buildSystemPrompt(config) {
     const focusInstruction = getFocusInstruction(config.focus);
     const promptInstruction = config.includePrompts
-        ? 'For every Critical or High severity issue, you MUST include a "fixPrompt" field — a complete, ready-to-paste prompt that the user can copy directly into Claude, Cursor, or ChatGPT to fix the problem.'
+        ? 'For every Critical, High, and Medium severity issue, you MUST include a "fixPrompt" field — a complete, ready-to-paste prompt that the user can copy directly into Claude, Cursor, or ChatGPT to fix the problem.'
         : 'Do not include fixPrompt fields.';
     return `You are VibeGuard AI — a senior code reviewer with 15 years of experience across security engineering, frontend architecture, backend systems, and performance optimization.
 
@@ -36375,7 +36387,7 @@ Respond with ONLY a valid JSON object. No markdown fences, no preamble.
       "goalRelation": "How does this flaw undermine the user's specific goal?",
       "codeLocation": "filename:line-range (e.g. auth.py:45-52)",
       "codeSnippet": "The exact problematic code snippet",
-      "fixPrompt": "Complete copy-pasteable fix prompt for Claude/Cursor — only for Critical/High"
+      "fixPrompt": "Complete copy-pasteable fix prompt for Claude/Cursor — required for Critical, High, and Medium issues"
     }
   ]
 }
