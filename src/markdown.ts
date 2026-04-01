@@ -9,77 +9,103 @@ const SEVERITY_EMOJI: Record<string, string> = {
 
 const SCORE_EMOJI = (n: number) => (n >= 80 ? '✅' : n >= 60 ? '⚠️' : '❌');
 
-/**
- * Convert a ReviewResult into a structured Markdown PR comment.
- * Strictly follows the example output format from the PRD.
- */
 export function renderMarkdown(result: ReviewResult, includePrompts: boolean): string {
   const lines: string[] = [];
 
-  // ── Header ─────────────────────────────────────────────────────────────────
-  lines.push('## 🛡️ VibeGuard AI — Code Reflection Report');
-  lines.push('');
-  lines.push('> 🤖 This is an educational review, not a judgment. Think of it as a knowledgeable friend flagging things before you ship. All findings are suggestions — **you make the final call**.');
+  const criticalAndHigh = result.issues.filter(
+    (i) => i.severity === 'Critical' || i.severity === 'High'
+  );
+  const topIssue = criticalAndHigh[0];
+
+  // ── Hero Banner ─────────────────────────────────────────────────────────
+  if (topIssue) {
+    const emoji = SEVERITY_EMOJI[topIssue.severity];
+    lines.push(`## ${emoji} This code works — but has a problem that needs fixing`);
+    lines.push('');
+    lines.push(`> **${topIssue.title}**`);
+    lines.push(`> ${topIssue.description}`);
+    lines.push('');
+  } else {
+    lines.push('## ✅ This code looks good!');
+    lines.push('');
+    lines.push('> No critical or high severity issues found. Nice work! 🎉');
+    lines.push('');
+  }
+
+  // ── Top Fix Prompt (above the fold) ─────────────────────────────────────
+  if (topIssue && includePrompts && topIssue.fixPrompt) {
+    lines.push('### 🔥 Fix it with this prompt — copy and paste into Claude or Cursor');
+    lines.push('');
+    lines.push('```');
+    lines.push(topIssue.fixPrompt);
+    lines.push('```');
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+  }
+
+  // ── AI wrote this → VibeGuard noticed ────────────────────────────────────
+  if (topIssue && topIssue.codeSnippet && topIssue.codeSnippet !== '(see diff for details)') {
+    lines.push('<details>');
+    lines.push('<summary>🤖 <strong>AI wrote this → VibeGuard noticed a problem</strong></summary>');
+    lines.push('');
+    lines.push('**🤖 AI generated this code:**');
+    lines.push('```');
+    lines.push(topIssue.codeSnippet);
+    lines.push('```');
+    lines.push('');
+    lines.push(`**🧠 VibeGuard noticed:** ${topIssue.riskImpact}`);
+    lines.push('');
+    lines.push(`**🎯 Why it matters for your goal:** ${topIssue.goalRelation}`);
+    lines.push('');
+    lines.push('</details>');
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+  }
+
+  // ── Full Report (collapsed) ──────────────────────────────────────────────
+  lines.push('<details>');
+  lines.push('<summary>📊 <strong>Full Report — Scores, All Issues & Details</strong></summary>');
   lines.push('');
 
-  // ── Inferred Goal ──────────────────────────────────────────────────────────
-  lines.push('### 🎯 Inferred User Goal');
+  lines.push('### 🎯 Inferred Goal');
   lines.push(result.inferredGoal);
   lines.push('');
 
-  // ── Quality Score ──────────────────────────────────────────────────────────
-  lines.push('### 📊 Overall Quality Score');
+  lines.push('### 📊 Quality Score');
   lines.push('');
   lines.push(renderScoreTable(result.score));
   lines.push('');
 
-  // ── Top 3 Risks ────────────────────────────────────────────────────────────
   if (result.top3Risks.length > 0) {
-    lines.push('### ⚡ Top 3 Risks at a Glance');
+    lines.push('### ⚡ Top Risks');
     for (const risk of result.top3Risks.slice(0, 3)) {
       lines.push(`- ${risk}`);
     }
     lines.push('');
   }
 
-  // ── Issues ─────────────────────────────────────────────────────────────────
-  if (result.issues.length === 0) {
-    lines.push('### ✅ No Issues Found');
+  if (result.issues.length > 0) {
+    lines.push('### 🔍 All Issues');
     lines.push('');
-    lines.push('Great job! No significant security or quality issues were detected in this diff. Keep it up! 🎉');
-    lines.push('');
-  } else {
-    lines.push('---');
-    lines.push('');
-    lines.push('## 🔍 Detailed Issues');
-    lines.push('');
-
-    // Group by severity
     const order: Array<ReviewIssue['severity']> = ['Critical', 'High', 'Medium', 'Low'];
     for (const severity of order) {
       const group = result.issues.filter((i) => i.severity === severity);
       if (group.length === 0) continue;
-
       for (let idx = 0; idx < group.length; idx++) {
         lines.push(renderIssue(group[idx], idx + 1, includePrompts));
       }
     }
   }
 
-  // ── Footer ─────────────────────────────────────────────────────────────────
-  lines.push('---');
-  lines.push('');
-  lines.push('<details>');
-  lines.push('<summary>💡 How to use the fix prompts</summary>');
-  lines.push('');
-  lines.push('1. Copy the **Fix Prompt** for an issue');
-  lines.push('2. Open Claude, Cursor, or ChatGPT');
-  lines.push('3. Paste the prompt and add your problematic code at the bottom');
-  lines.push('4. Apply the suggested fix and push a new commit');
-  lines.push('');
   lines.push('</details>');
   lines.push('');
-  lines.push(`*Generated by [VibeGuard AI](https://github.com/vibeguard-ai/vibeguard-ai) — open-source, local-LLM-first code reflection for vibe coders.*`);
+
+  // ── Footer ───────────────────────────────────────────────────────────────
+  lines.push('---');
+  lines.push('');
+  lines.push('> 🤖 Educational review by [VibeGuard AI](https://github.com/y1485309801-sudo/vibeguard-ai) — all findings are suggestions, **you make the final call**.');
 
   return lines.join('\n');
 }
@@ -98,40 +124,33 @@ function renderIssue(issue: ReviewIssue, num: number, includePrompts: boolean): 
   const emoji = SEVERITY_EMOJI[issue.severity] ?? '⚪';
   const lines: string[] = [];
 
-  lines.push(`### ${emoji} ${issue.severity} Issue ${num}: ${issue.title}`);
+  lines.push(`#### ${emoji} ${issue.severity} Issue ${num}: ${issue.title}`);
   lines.push('');
-
   lines.push(`**📍 Location:** \`${issue.codeLocation}\``);
   lines.push('');
-
-  lines.push(`**📝 What's happening:**`);
-  lines.push(issue.description);
+  lines.push(`**📝 What's happening:** ${issue.description}`);
   lines.push('');
-
-  lines.push(`**💥 What could go wrong:**`);
-  lines.push(issue.riskImpact);
+  lines.push(`**💥 What could go wrong:** ${issue.riskImpact}`);
   lines.push('');
-
-  lines.push(`**🎯 Impact on your goal:**`);
-  lines.push(issue.goalRelation);
+  lines.push(`**🎯 Impact on your goal:** ${issue.goalRelation}`);
   lines.push('');
 
   if (issue.codeSnippet && issue.codeSnippet !== '(see diff for details)') {
-    lines.push(`**🔎 Problematic code:**`);
+    lines.push('**🤖 AI wrote this → VibeGuard noticed:**');
     lines.push('```');
     lines.push(issue.codeSnippet);
     lines.push('```');
     lines.push('');
   }
 
-  // Fix prompt — only for Critical/High if enabled
+  // Critical, High, Medium all get fix prompts; Low does not
   if (
     includePrompts &&
     issue.fixPrompt &&
-    (issue.severity === 'Critical' || issue.severity === 'High')
+    (issue.severity === 'Critical' || issue.severity === 'High' || issue.severity === 'Medium')
   ) {
     lines.push('<details>');
-    lines.push('<summary>🔧 <strong>Copy-Paste Fix Prompt for Claude/Cursor</strong></summary>');
+    lines.push('<summary>🔧 <strong>Fix Prompt for Claude/Cursor</strong></summary>');
     lines.push('');
     lines.push('```');
     lines.push(issue.fixPrompt);

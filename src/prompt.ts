@@ -3,7 +3,7 @@ import { ActionConfig, PRContext } from './types';
 export function buildSystemPrompt(config: ActionConfig): string {
   const focusInstruction = getFocusInstruction(config.focus);
   const promptInstruction = config.includePrompts
-    ? 'For every Critical or High severity issue, you MUST include a "fixPrompt" field — a complete, ready-to-paste prompt that the user can copy directly into Claude, Cursor, or ChatGPT to fix the problem.'
+    ? 'For every Critical, High, and Medium severity issue, you MUST include a "fixPrompt" field — a complete, ready-to-paste prompt that the user can copy directly into Claude, Cursor, or ChatGPT to fix the problem.'
     : 'Do not include fixPrompt fields.';
 
   return `You are VibeGuard AI — a senior code reviewer with 15 years of experience across security engineering, frontend architecture, backend systems, and performance optimization.
@@ -80,7 +80,7 @@ Respond with ONLY a valid JSON object. No markdown fences, no preamble.
       "goalRelation": "How does this flaw undermine the user's specific goal?",
       "codeLocation": "filename:line-range (e.g. auth.py:45-52)",
       "codeSnippet": "The exact problematic code snippet",
-      "fixPrompt": "Complete copy-pasteable fix prompt for Claude/Cursor — only for Critical/High"
+      "fixPrompt": "Complete copy-pasteable fix prompt for Claude/Cursor — required for Critical, High, and Medium issues"
     }
   ]
 }
