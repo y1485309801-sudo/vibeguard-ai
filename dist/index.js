@@ -36121,8 +36121,9 @@ async function callLLM(config, systemPrompt, userMessage, diff) {
 }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function parseJSON(text) {
-    // Remove markdown code fences if present
-    const cleaned = text
+    // Remove deepseek-reasoner <think>...</think> blocks
+    let cleaned = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    cleaned = cleaned
         .replace(/^```(?:json)?\s*/m, '')
         .replace(/\s*```\s*$/m, '')
         .trim();
