@@ -2,6 +2,9 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { PRContext } from './types';
 
+const MAX_FILE_SIZE = 100 * 1024; // 100KB per file
+const MAX_FILES = 10; // max files to analyze
+
 export async function getPRContext(token: string, maxDiffLines: number): Promise<PRContext> {
   const octokit = github.getOctokit(token);
   const ctx = github.context;
@@ -30,13 +33,14 @@ export async function getPRContext(token: string, maxDiffLines: number): Promise
     });
     commitMessages = commitsResp.data.map((c) => c.commit.message.split('\n')[0]);
 
-    const diffResp = await octokit.rest.pulls.get({
+    // Get list of changed files
+    const filesResp = await octokit.rest.pulls.listFiles({
       owner, repo,
       pull_number: prNumber,
-      mediaType: { format: 'diff' },
+      per_page: 100,
     });
-    // @ts-expect-error octokit returns string for diff media type
-    diff = diffResp.data as string;
+
+    diff = await buildDiffFromFiles(octokit, owner, repo, filesResp.data, maxDiffLines);
 
   // ── Push event ───────────────────────────────────────────────────────────
   } else if (ctx.payload.commits) {
@@ -47,37 +51,109 @@ export async function getPRContext(token: string, maxDiffLines: number): Promise
     commitMessages = (ctx.payload.commits as Array<{ message: string }>)
       .map((c) => c.message.split('\n')[0]);
 
-    // Build a diff from the push by comparing head to its parent
     const headSha = ctx.sha;
     const compareResp = await octokit.rest.repos.compareCommitsWithBasehead({
-      owner,
-      repo,
+      owner, repo,
       basehead: `${headSha}^...${headSha}`,
     });
 
-    // Build a simple diff from the file list
-    const files = compareResp.data.files ?? [];
-    diff = files
-      .map((f) => {
-        const header = `diff --git a/${f.filename} b/${f.filename}\n--- a/${f.filename}\n+++ b/${f.filename}`;
-        return `${header}\n${f.patch ?? '(binary or no patch)'}`;
-      })
-      .join('\n\n');
+    diff = await buildDiffFromFiles(octokit, owner, repo, compareResp.data.files ?? [], maxDiffLines);
 
   } else {
     throw new Error('VibeGuard AI must be triggered on a pull_request or push event.');
   }
 
-  // Chunk large diffs
-  const lines = diff.split('\n');
-  if (lines.length > maxDiffLines) {
-    core.warning(
-      `Diff is ${lines.length} lines — truncating to first ${maxDiffLines} lines.`
-    );
-    diff = lines.slice(0, maxDiffLines).join('\n') + '\n\n[...diff truncated...]';
+  return { owner, repo, prNumber, prTitle, prBody, commitMessages, diff };
+}
+
+/**
+ * Build a diff string from a list of changed files.
+ * For files where the patch is missing (too large), fetch the full content directly.
+ */
+async function buildDiffFromFiles(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  octokit: any,
+  owner: string,
+  repo: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  files: any[],
+  maxDiffLines: number
+): Promise<string> {
+  const parts: string[] = [];
+  let totalLines = 0;
+  let fileCount = 0;
+
+  const relevantFiles = files.filter(
+    (f) => f.status !== 'removed' && !isBinary(f.filename)
+  );
+
+  for (const file of relevantFiles) {
+    if (fileCount >= MAX_FILES) {
+      parts.push(`\n[...${files.length - fileCount} more files not shown — limit reached...]`);
+      break;
+    }
+
+    const header = `diff --git a/${file.filename} b/${file.filename}\n--- a/${file.filename}\n+++ b/${file.filename}`;
+
+    if (file.patch && file.patch.length < MAX_FILE_SIZE) {
+      const fileLines = file.patch.split('\n');
+      totalLines += fileLines.length;
+      parts.push(`${header}\n${file.patch}`);
+      fileCount++;
+
+    } else if (!file.patch) {
+      // Patch missing — file too large for GitHub diff API, fetch content directly
+      core.info(`File ${file.filename} has no patch (too large) — fetching content directly...`);
+      try {
+        const contentResp = await octokit.rest.repos.getContent({
+          owner, repo,
+          path: file.filename,
+          ref: file.sha,
+        });
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const content = Buffer.from((contentResp.data as any).content, 'base64').toString('utf-8');
+        const lines = content.split('\n');
+
+        const truncated = lines.length > maxDiffLines
+          ? lines.slice(0, maxDiffLines).join('\n') + `\n\n[...file truncated at ${maxDiffLines} lines...]`
+          : content;
+
+        const addedLines = truncated.split('\n').map((l) => `+${l}`).join('\n');
+        totalLines += truncated.split('\n').length;
+        parts.push(`${header}\n@@ -0,0 +1,${lines.length} @@\n${addedLines}`);
+        fileCount++;
+        core.info(`Fetched ${lines.length} lines from ${file.filename}`);
+
+      } catch (err) {
+        core.warning(`Could not fetch content for ${file.filename}: ${err}`);
+        parts.push(`${header}\n[Content could not be retrieved]`);
+        fileCount++;
+      }
+    } else {
+      core.warning(`File ${file.filename} patch is very large — truncating.`);
+      const truncatedPatch = file.patch.split('\n').slice(0, maxDiffLines).join('\n');
+      parts.push(`${header}\n${truncatedPatch}\n[...truncated...]`);
+      totalLines += maxDiffLines;
+      fileCount++;
+    }
+
+    if (totalLines >= maxDiffLines) {
+      parts.push(`\n[...remaining files not shown — line limit ${maxDiffLines} reached...]`);
+      break;
+    }
   }
 
-  return { owner, repo, prNumber, prTitle, prBody, commitMessages, diff };
+  return parts.join('\n\n');
+}
+
+function isBinary(filename: string): boolean {
+  const binaryExts = [
+    '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.ico',
+    '.pdf', '.zip', '.tar', '.gz', '.exe', '.dll', '.so',
+    '.ttf', '.woff', '.woff2', '.eot', '.mp4', '.mp3', '.wav',
+  ];
+  return binaryExts.some((ext) => filename.toLowerCase().endsWith(ext));
 }
 
 export async function postReviewComment(
@@ -92,12 +168,10 @@ export async function postReviewComment(
   const MARKER = '<!-- vibeguard-ai-review -->';
   const fullBody = `${MARKER}\n${body}`;
 
-  // For push events (no PR), post as a commit comment
   if (prNumber === 0) {
     const commitSha = ctx.sha;
     const created = await octokit.rest.repos.createCommitComment({
-      owner,
-      repo,
+      owner, repo,
       commit_sha: commitSha,
       body: fullBody,
     });
@@ -105,7 +179,6 @@ export async function postReviewComment(
     return created.data.html_url;
   }
 
-  // For PR events, update or create PR comment
   const comments = await octokit.rest.issues.listComments({
     owner, repo,
     issue_number: prNumber,
