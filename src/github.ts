@@ -1,210 +1,172 @@
-import * as core from '@actions/core';
-import * as github from '@actions/github';
-import { PRContext } from './types';
+import { ReviewResult, ReviewIssue, ReviewScore } from './types';
 
-const MAX_FILE_SIZE = 100 * 1024;
-const MAX_FILES = 10;
+const SEVERITY_EMOJI: Record<string, string> = {
+  Critical: '🔴',
+  High: '🟠',
+  Medium: '🟡',
+  Low: '🔵',
+};
 
-export async function getPRContext(token: string, maxDiffLines: number): Promise<PRContext> {
-  const octokit = github.getOctokit(token);
-  const ctx = github.context;
+const SCORE_EMOJI = (n: number) => (n >= 80 ? '✅' : n >= 60 ? '⚠️' : '❌');
 
-  let owner: string;
-  let repo: string;
-  let prNumber: number;
-  let prTitle: string;
-  let prBody: string;
-  let commitMessages: string[];
-  let diff: string;
-  let headSha: string;
+export function renderMarkdown(result: ReviewResult, includePrompts: boolean): string {
+  const lines: string[] = [];
 
-  owner = ctx.repo.owner;
-  repo = ctx.repo.repo;
-
-  // ── Pull Request event ───────────────────────────────────────────────────
-  if (ctx.payload.pull_request) {
-    prNumber = ctx.payload.pull_request.number;
-    prTitle = ctx.payload.pull_request.title ?? '';
-    prBody = ctx.payload.pull_request.body ?? '';
-    headSha = ctx.payload.pull_request.head.sha;
-
-    const commitsResp = await octokit.rest.pulls.listCommits({
-      owner, repo,
-      pull_number: prNumber,
-      per_page: 20,
-    });
-    commitMessages = commitsResp.data.map((c) => c.commit.message.split('\n')[0]);
-
-    const filesResp = await octokit.rest.pulls.listFiles({
-      owner, repo,
-      pull_number: prNumber,
-      per_page: 100,
-    });
-
-    diff = await buildDiffFromFiles(octokit, owner, repo, filesResp.data, maxDiffLines, headSha);
-
-  // ── Push event ───────────────────────────────────────────────────────────
-  } else if (ctx.payload.commits) {
-    prNumber = 0;
-    prTitle = ctx.payload.head_commit?.message ?? 'Push event';
-    prBody = '';
-    headSha = ctx.sha;
-
-    commitMessages = (ctx.payload.commits as Array<{ message: string }>)
-      .map((c) => c.message.split('\n')[0]);
-
-    const compareResp = await octokit.rest.repos.compareCommitsWithBasehead({
-      owner, repo,
-      basehead: `${headSha}^...${headSha}`,
-    });
-
-    diff = await buildDiffFromFiles(octokit, owner, repo, compareResp.data.files ?? [], maxDiffLines, headSha);
-
-  } else {
-    throw new Error('VibeGuard AI must be triggered on a pull_request or push event.');
-  }
-
-  return { owner, repo, prNumber, prTitle, prBody, commitMessages, diff };
-}
-
-async function buildDiffFromFiles(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  octokit: any,
-  owner: string,
-  repo: string,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  files: any[],
-  maxDiffLines: number,
-  headSha: string  // ← use the commit sha, not the blob sha
-): Promise<string> {
-  const parts: string[] = [];
-  let totalLines = 0;
-  let fileCount = 0;
-
-  const relevantFiles = files.filter(
-    (f) => f.status !== 'removed' && !isBinary(f.filename)
+  const criticalAndHigh = result.issues.filter(
+    (i) => i.severity === 'Critical' || i.severity === 'High'
   );
+  const rest = result.issues.filter(
+    (i) => i.severity !== 'Critical' && i.severity !== 'High'
+  );
+  const topIssue = criticalAndHigh[0];
 
-  for (const file of relevantFiles) {
-    if (fileCount >= MAX_FILES) {
-      parts.push(`\n[...${files.length - fileCount} more files not shown — limit reached...]`);
-      break;
-    }
-
-    const header = `diff --git a/${file.filename} b/${file.filename}\n--- a/${file.filename}\n+++ b/${file.filename}`;
-
-    if (file.patch && file.patch.length < MAX_FILE_SIZE) {
-      // Normal case: patch available and not too large
-      const fileLines = file.patch.split('\n');
-      totalLines += fileLines.length;
-      parts.push(`${header}\n${file.patch}`);
-      fileCount++;
-
-    } else if (!file.patch) {
-      // File too large for GitHub diff API — fetch content using commit sha (not blob sha!)
-      core.info(`File ${file.filename} has no patch (too large) — fetching via commit ref ${headSha.slice(0,7)}...`);
-      try {
-        const contentResp = await octokit.rest.repos.getContent({
-          owner,
-          repo,
-          path: file.filename,
-          ref: headSha,  // ← correct: use commit sha
-        });
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const data = contentResp.data as any;
-        const content = Buffer.from(data.content, 'base64').toString('utf-8');
-        const lines = content.split('\n');
-
-        const truncated = lines.length > maxDiffLines
-          ? lines.slice(0, maxDiffLines).join('\n') + `\n\n[...file truncated at ${maxDiffLines} lines...]`
-          : content;
-
-        const addedLines = truncated.split('\n').map((l: string) => `+${l}`).join('\n');
-        totalLines += truncated.split('\n').length;
-        parts.push(`${header}\n@@ -0,0 +1,${lines.length} @@\n${addedLines}`);
-        fileCount++;
-        core.info(`✅ Fetched ${lines.length} lines from ${file.filename}`);
-
-      } catch (err) {
-        core.warning(`Could not fetch content for ${file.filename}: ${err}`);
-        parts.push(`${header}\n[Content could not be retrieved: ${err}]`);
-        fileCount++;
-      }
-
-    } else {
-      // Patch exists but very large — truncate it
-      core.warning(`File ${file.filename} patch is very large — truncating.`);
-      const truncatedPatch = file.patch.split('\n').slice(0, maxDiffLines).join('\n');
-      parts.push(`${header}\n${truncatedPatch}\n[...truncated...]`);
-      totalLines += maxDiffLines;
-      fileCount++;
-    }
-
-    if (totalLines >= maxDiffLines) {
-      parts.push(`\n[...remaining files not shown — line limit ${maxDiffLines} reached...]`);
-      break;
-    }
-  }
-
-  return parts.join('\n\n');
-}
-
-function isBinary(filename: string): boolean {
-  const binaryExts = [
-    '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.ico',
-    '.pdf', '.zip', '.tar', '.gz', '.exe', '.dll', '.so',
-    '.ttf', '.woff', '.woff2', '.eot', '.mp4', '.mp3', '.wav',
-  ];
-  return binaryExts.some((ext) => filename.toLowerCase().endsWith(ext));
-}
-
-export async function postReviewComment(
-  token: string,
-  owner: string,
-  repo: string,
-  prNumber: number,
-  body: string
-): Promise<string> {
-  const octokit = github.getOctokit(token);
-  const ctx = github.context;
-  const MARKER = '<!-- vibeguard-ai-review -->';
-  const fullBody = `${MARKER}\n${body}`;
-
-  if (prNumber === 0) {
-    const commitSha = ctx.sha;
-    const created = await octokit.rest.repos.createCommitComment({
-      owner, repo,
-      commit_sha: commitSha,
-      body: fullBody,
-    });
-    core.info(`Created commit comment: ${created.data.html_url}`);
-    return created.data.html_url;
-  }
-
-  const comments = await octokit.rest.issues.listComments({
-    owner, repo,
-    issue_number: prNumber,
-    per_page: 100,
-  });
-
-  const existing = comments.data.find((c) => c.body?.includes(MARKER));
-
-  if (existing) {
-    const updated = await octokit.rest.issues.updateComment({
-      owner, repo,
-      comment_id: existing.id,
-      body: fullBody,
-    });
-    core.info(`Updated existing review comment: ${updated.data.html_url}`);
-    return updated.data.html_url;
+  // ── Hero Banner ─────────────────────────────────────────────────────────
+  if (topIssue) {
+    const emoji = SEVERITY_EMOJI[topIssue.severity];
+    lines.push(`## ${emoji} This code works — but has a problem that needs fixing`);
+    lines.push('');
+    lines.push(`> **${topIssue.title}**`);
+    lines.push(`> ${topIssue.description}`);
+    lines.push('');
   } else {
-    const created = await octokit.rest.issues.createComment({
-      owner, repo,
-      issue_number: prNumber,
-      body: fullBody,
-    });
-    core.info(`Created review comment: ${created.data.html_url}`);
-    return created.data.html_url;
+    lines.push('## ✅ This code looks good!');
+    lines.push('');
+    lines.push('> No critical or high severity issues found. Nice work! 🎉');
+    lines.push('');
   }
+
+  // ── Top Fix Prompt (above the fold) ─────────────────────────────────────
+  if (topIssue && includePrompts && topIssue.fixPrompt) {
+    lines.push('### 🔥 Fix it with this prompt — copy and paste into Claude or Cursor');
+    lines.push('');
+    lines.push('```');
+    lines.push(topIssue.fixPrompt);
+    lines.push('```');
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+  }
+
+  // ── AI wrote this → VibeGuard noticed ────────────────────────────────────
+  if (topIssue && topIssue.codeSnippet && topIssue.codeSnippet !== '(see diff for details)') {
+    lines.push('<details>');
+    lines.push('<summary>🤖 <strong>AI wrote this → VibeGuard noticed a problem</strong></summary>');
+    lines.push('');
+    lines.push('**🤖 AI generated this code:**');
+    lines.push('```');
+    lines.push(topIssue.codeSnippet);
+    lines.push('```');
+    lines.push('');
+    lines.push(`**🧠 VibeGuard noticed:** ${topIssue.riskImpact}`);
+    lines.push('');
+    lines.push(`**🎯 Why it matters for your goal:** ${topIssue.goalRelation}`);
+    lines.push('');
+    lines.push('</details>');
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+  }
+
+  // ── Inferred Goal ────────────────────────────────────────────────────────
+  lines.push('<details>');
+  lines.push('<summary>📊 <strong>Full Report — Scores, All Issues & Details</strong></summary>');
+  lines.push('');
+  lines.push('### 🎯 Inferred Goal');
+  lines.push(result.inferredGoal);
+  lines.push('');
+
+  // ── Score ────────────────────────────────────────────────────────────────
+  lines.push('### 📊 Quality Score');
+  lines.push('');
+  lines.push(renderScoreTable(result.score));
+  lines.push('');
+
+  // ── Top 3 Risks ──────────────────────────────────────────────────────────
+  if (result.top3Risks.length > 0) {
+    lines.push('### ⚡ Top Risks');
+    for (const risk of result.top3Risks.slice(0, 3)) {
+      lines.push(`- ${risk}`);
+    }
+    lines.push('');
+  }
+
+  // ── All Issues ───────────────────────────────────────────────────────────
+  if (result.issues.length > 0) {
+    lines.push('### 🔍 All Issues');
+    lines.push('');
+
+    const order: Array<ReviewIssue['severity']> = ['Critical', 'High', 'Medium', 'Low'];
+    for (const severity of order) {
+      const group = result.issues.filter((i) => i.severity === severity);
+      if (group.length === 0) continue;
+      for (let idx = 0; idx < group.length; idx++) {
+        lines.push(renderIssue(group[idx], idx + 1, includePrompts));
+      }
+    }
+  }
+
+  lines.push('</details>');
+  lines.push('');
+
+  // ── Footer ───────────────────────────────────────────────────────────────
+  lines.push('---');
+  lines.push('');
+  lines.push('> 🤖 Educational review by [VibeGuard AI](https://github.com/y1485309801-sudo/vibeguard-ai) — all findings are suggestions, **you make the final call**.');
+
+  return lines.join('\n');
+}
+
+function renderScoreTable(score: ReviewScore): string {
+  return [
+    '| Dimension | Score | Status |',
+    '|-----------|-------|--------|',
+    `| 🔒 Security | ${score.security}/100 | ${SCORE_EMOJI(score.security)} |`,
+    `| 🔧 Maintainability | ${score.maintainability}/100 | ${SCORE_EMOJI(score.maintainability)} |`,
+    `| ✓ Correctness | ${score.correctness}/100 | ${SCORE_EMOJI(score.correctness)} |`,
+  ].join('\n');
+}
+
+function renderIssue(issue: ReviewIssue, num: number, includePrompts: boolean): string {
+  const emoji = SEVERITY_EMOJI[issue.severity] ?? '⚪';
+  const lines: string[] = [];
+
+  lines.push(`#### ${emoji} ${issue.severity} Issue ${num}: ${issue.title}`);
+  lines.push('');
+  lines.push(`**📍 Location:** \`${issue.codeLocation}\``);
+  lines.push('');
+  lines.push(`**📝 What's happening:** ${issue.description}`);
+  lines.push('');
+  lines.push(`**💥 What could go wrong:** ${issue.riskImpact}`);
+  lines.push('');
+  lines.push(`**🎯 Impact on your goal:** ${issue.goalRelation}`);
+  lines.push('');
+
+  if (issue.codeSnippet && issue.codeSnippet !== '(see diff for details)') {
+    lines.push('**🤖 AI wrote this → VibeGuard noticed:**');
+    lines.push('```');
+    lines.push(issue.codeSnippet);
+    lines.push('```');
+    lines.push('');
+  }
+
+  if (
+    includePrompts &&
+    issue.fixPrompt &&
+    (issue.severity === 'Critical' || issue.severity === 'High')
+  ) {
+    lines.push('<details>');
+    lines.push('<summary>🔧 <strong>Fix Prompt for Claude/Cursor</strong></summary>');
+    lines.push('');
+    lines.push('```');
+    lines.push(issue.fixPrompt);
+    lines.push('```');
+    lines.push('');
+    lines.push('</details>');
+    lines.push('');
+  }
+
+  lines.push('---');
+  lines.push('');
+
+  return lines.join('\n');
 }
