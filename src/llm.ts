@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import OpenAI from 'openai';
 import { ActionConfig, ReviewResult, ReviewIssue, PatternMatch } from './types';
 
-// ── Hardcoded pattern-based pre-checks (lowers hallucination rate) ───────────
+// ── Hardcoded pattern-based pre-checks ───────────────────────────────────────
 const HARDCODED_PATTERNS: PatternMatch[] = [
   {
     severity: 'Critical',
@@ -15,7 +15,7 @@ const HARDCODED_PATTERNS: PatternMatch[] = [
     severity: 'Critical',
     focus: 'security',
     title: 'SQL String Concatenation (Possible Injection)',
-    description: 'SQL query appears to be built by concatenating user input, which can allow attackers to manipulate the database.',
+    description: 'SQL query appears to be built by concatenating user input.',
     pattern: /(?:SELECT|INSERT|UPDATE|DELETE|FROM|WHERE).*?\+.*?(?:req\.|request\.|params\.|body\.|query\.)/gi,
   },
   {
@@ -41,19 +41,14 @@ const HARDCODED_PATTERNS: PatternMatch[] = [
   },
 ];
 
-/**
- * Run pattern-based checks on the diff independently from LLM.
- * These are merged with LLM results to reduce hallucinations.
- */
 function runPatternChecks(diff: string): Partial<ReviewIssue>[] {
   const findings: Partial<ReviewIssue>[] = [];
+  const addedLines = diff
+    .split('\n')
+    .filter((l) => l.startsWith('+') && !l.startsWith('+++'))
+    .join('\n');
 
   for (const pattern of HARDCODED_PATTERNS) {
-    const addedLines = diff
-      .split('\n')
-      .filter((l) => l.startsWith('+') && !l.startsWith('+++'))
-      .join('\n');
-
     if (pattern.pattern.test(addedLines)) {
       findings.push({
         severity: pattern.severity,
@@ -66,17 +61,11 @@ function runPatternChecks(diff: string): Partial<ReviewIssue>[] {
         codeSnippet: '(see diff for details)',
       });
     }
-
-    // Reset regex lastIndex for global patterns
     pattern.pattern.lastIndex = 0;
   }
-
   return findings;
 }
 
-/**
- * Call the LLM and parse the structured JSON response.
- */
 export async function callLLM(
   config: ActionConfig,
   systemPrompt: string,
@@ -86,7 +75,7 @@ export async function callLLM(
   const client = new OpenAI({
     baseURL: config.llmBaseUrl,
     apiKey: config.llmApiKey || 'ollama',
-    timeout: 90_000, // 90s timeout for local models
+    timeout: 120_000,
   });
 
   core.info(`Calling LLM at ${config.llmBaseUrl} with model: ${config.model}`);
@@ -97,7 +86,7 @@ export async function callLLM(
     const response = await client.chat.completions.create({
       model: config.model,
       max_tokens: config.maxTokens,
-      temperature: 0.1, // Low temperature for consistent structured output
+      temperature: 0.1,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMessage },
@@ -105,22 +94,23 @@ export async function callLLM(
     });
 
     rawResponse = response.choices[0]?.message?.content ?? '';
-    core.debug(`Raw LLM response: ${rawResponse.substring(0, 500)}...`);
+
+    // Log first 1000 chars so we can debug parse failures
+    core.warning(`[DEBUG] Raw LLM response (first 1000 chars): ${rawResponse.substring(0, 1000)}`);
 
   } catch (err) {
     core.warning(`LLM call failed: ${err}. Falling back to pattern-only analysis.`);
     return buildFallbackResult(diff);
   }
 
-  // Parse JSON — strip markdown fences if the model added them
   const parsed = parseJSON(rawResponse);
 
   if (!parsed) {
     core.warning('LLM returned non-JSON response. Falling back to pattern-only analysis.');
+    core.warning(`[DEBUG] Full raw response: ${rawResponse}`);
     return buildFallbackResult(diff);
   }
 
-  // Merge in pattern-based findings that LLM might have missed
   const patternIssues = runPatternChecks(diff);
   const llmIssuesTitles = new Set((parsed.issues ?? []).map((i: ReviewIssue) => i.title));
 
@@ -145,22 +135,30 @@ export async function callLLM(
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function parseJSON(text: string): any | null {
-  // Remove deepseek-reasoner <think>...</think> blocks
-  let cleaned = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-  
+  // Step 1: Remove deepseek-reasoner <think>...</think> blocks
+  let cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+
+  // Step 2: Remove markdown code fences
   cleaned = cleaned
     .replace(/^```(?:json)?\s*/m, '')
     .replace(/\s*```\s*$/m, '')
     .trim();
 
-  // Find the first { ... } block
+  // Step 3: Find first { ... } block
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
-  if (start === -1 || end === -1) return null;
+  if (start === -1 || end === -1) {
+    core.warning(`[DEBUG] No JSON object found in response. Start: ${start}, End: ${end}`);
+    return null;
+  }
+
+  const jsonStr = cleaned.slice(start, end + 1);
 
   try {
-    return JSON.parse(cleaned.slice(start, end + 1));
-  } catch {
+    return JSON.parse(jsonStr);
+  } catch (e) {
+    core.warning(`[DEBUG] JSON parse failed: ${e}`);
+    core.warning(`[DEBUG] Attempted to parse: ${jsonStr.substring(0, 500)}`);
     return null;
   }
 }
