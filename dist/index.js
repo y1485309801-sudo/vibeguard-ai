@@ -35681,8 +35681,8 @@ exports.getPRContext = getPRContext;
 exports.postReviewComment = postReviewComment;
 const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
-const MAX_FILE_SIZE = 100 * 1024; // 100KB per file
-const MAX_FILES = 10; // max files to analyze
+const MAX_FILE_SIZE = 100 * 1024;
+const MAX_FILES = 10;
 async function getPRContext(token, maxDiffLines) {
     const octokit = github.getOctokit(token);
     const ctx = github.context;
@@ -35693,6 +35693,7 @@ async function getPRContext(token, maxDiffLines) {
     let prBody;
     let commitMessages;
     let diff;
+    let headSha;
     owner = ctx.repo.owner;
     repo = ctx.repo.repo;
     // ── Pull Request event ───────────────────────────────────────────────────
@@ -35700,48 +35701,45 @@ async function getPRContext(token, maxDiffLines) {
         prNumber = ctx.payload.pull_request.number;
         prTitle = ctx.payload.pull_request.title ?? '';
         prBody = ctx.payload.pull_request.body ?? '';
+        headSha = ctx.payload.pull_request.head.sha;
         const commitsResp = await octokit.rest.pulls.listCommits({
             owner, repo,
             pull_number: prNumber,
             per_page: 20,
         });
         commitMessages = commitsResp.data.map((c) => c.commit.message.split('\n')[0]);
-        // Get list of changed files
         const filesResp = await octokit.rest.pulls.listFiles({
             owner, repo,
             pull_number: prNumber,
             per_page: 100,
         });
-        diff = await buildDiffFromFiles(octokit, owner, repo, filesResp.data, maxDiffLines);
+        diff = await buildDiffFromFiles(octokit, owner, repo, filesResp.data, maxDiffLines, headSha);
         // ── Push event ───────────────────────────────────────────────────────────
     }
     else if (ctx.payload.commits) {
         prNumber = 0;
         prTitle = ctx.payload.head_commit?.message ?? 'Push event';
         prBody = '';
+        headSha = ctx.sha;
         commitMessages = ctx.payload.commits
             .map((c) => c.message.split('\n')[0]);
-        const headSha = ctx.sha;
         const compareResp = await octokit.rest.repos.compareCommitsWithBasehead({
             owner, repo,
             basehead: `${headSha}^...${headSha}`,
         });
-        diff = await buildDiffFromFiles(octokit, owner, repo, compareResp.data.files ?? [], maxDiffLines);
+        diff = await buildDiffFromFiles(octokit, owner, repo, compareResp.data.files ?? [], maxDiffLines, headSha);
     }
     else {
         throw new Error('VibeGuard AI must be triggered on a pull_request or push event.');
     }
     return { owner, repo, prNumber, prTitle, prBody, commitMessages, diff };
 }
-/**
- * Build a diff string from a list of changed files.
- * For files where the patch is missing (too large), fetch the full content directly.
- */
 async function buildDiffFromFiles(
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 octokit, owner, repo, 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-files, maxDiffLines) {
+files, maxDiffLines, headSha // ← use the commit sha, not the blob sha
+) {
     const parts = [];
     let totalLines = 0;
     let fileCount = 0;
@@ -35753,22 +35751,25 @@ files, maxDiffLines) {
         }
         const header = `diff --git a/${file.filename} b/${file.filename}\n--- a/${file.filename}\n+++ b/${file.filename}`;
         if (file.patch && file.patch.length < MAX_FILE_SIZE) {
+            // Normal case: patch available and not too large
             const fileLines = file.patch.split('\n');
             totalLines += fileLines.length;
             parts.push(`${header}\n${file.patch}`);
             fileCount++;
         }
         else if (!file.patch) {
-            // Patch missing — file too large for GitHub diff API, fetch content directly
-            core.info(`File ${file.filename} has no patch (too large) — fetching content directly...`);
+            // File too large for GitHub diff API — fetch content using commit sha (not blob sha!)
+            core.info(`File ${file.filename} has no patch (too large) — fetching via commit ref ${headSha.slice(0, 7)}...`);
             try {
                 const contentResp = await octokit.rest.repos.getContent({
-                    owner, repo,
+                    owner,
+                    repo,
                     path: file.filename,
-                    ref: file.sha,
+                    ref: headSha, // ← correct: use commit sha
                 });
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                const content = Buffer.from(contentResp.data.content, 'base64').toString('utf-8');
+                const data = contentResp.data;
+                const content = Buffer.from(data.content, 'base64').toString('utf-8');
                 const lines = content.split('\n');
                 const truncated = lines.length > maxDiffLines
                     ? lines.slice(0, maxDiffLines).join('\n') + `\n\n[...file truncated at ${maxDiffLines} lines...]`
@@ -35777,15 +35778,16 @@ files, maxDiffLines) {
                 totalLines += truncated.split('\n').length;
                 parts.push(`${header}\n@@ -0,0 +1,${lines.length} @@\n${addedLines}`);
                 fileCount++;
-                core.info(`Fetched ${lines.length} lines from ${file.filename}`);
+                core.info(`✅ Fetched ${lines.length} lines from ${file.filename}`);
             }
             catch (err) {
                 core.warning(`Could not fetch content for ${file.filename}: ${err}`);
-                parts.push(`${header}\n[Content could not be retrieved]`);
+                parts.push(`${header}\n[Content could not be retrieved: ${err}]`);
                 fileCount++;
             }
         }
         else {
+            // Patch exists but very large — truncate it
             core.warning(`File ${file.filename} patch is very large — truncating.`);
             const truncatedPatch = file.patch.split('\n').slice(0, maxDiffLines).join('\n');
             parts.push(`${header}\n${truncatedPatch}\n[...truncated...]`);
