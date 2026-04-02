@@ -24,7 +24,6 @@ export function renderMarkdown(result: ReviewResult, includePrompts: boolean): s
     lines.push(`## ${emoji} This code works — but can be exploited`);
     lines.push('');
 
-    // Code contrast
     if (topIssue.codeSnippet && topIssue.codeSnippet !== '(see diff for details)') {
       lines.push('**🤖 AI wrote this:**');
       lines.push('```');
@@ -36,7 +35,6 @@ export function renderMarkdown(result: ReviewResult, includePrompts: boolean): s
     lines.push(`**🧠 VibeGuard noticed:** ${topIssue.riskImpact}`);
     lines.push('');
 
-    // Fix prompt right after
     if (includePrompts && topIssue.fixPrompt) {
       lines.push('**🔥 Fix it now — copy and paste into Claude or Cursor:**');
       lines.push('');
@@ -134,11 +132,8 @@ function renderIssue(issue: ReviewIssue, num: number, includePrompts: boolean): 
     lines.push('');
   }
 
-  if (
-    includePrompts &&
-    issue.fixPrompt &&
-    (issue.severity === 'Critical' || issue.severity === 'High' || issue.severity === 'Medium')
-  ) {
+  // ALL severity levels get fix prompts (collapsed) — user decides what to fix
+  if (includePrompts && issue.fixPrompt) {
     lines.push('<details>');
     lines.push('<summary>🔧 <strong>Fix Prompt for Claude/Cursor</strong></summary>');
     lines.push('');

@@ -3,7 +3,7 @@ import { ActionConfig, PRContext } from './types';
 export function buildSystemPrompt(config: ActionConfig): string {
   const focusInstruction = getFocusInstruction(config.focus);
   const promptInstruction = config.includePrompts
-    ? 'For every Critical, High, and Medium severity issue, you MUST include a "fixPrompt" field — a complete, ready-to-paste prompt that the user can copy directly into Claude, Cursor, or ChatGPT to fix the problem.'
+    ? 'For ALL issues regardless of severity (Critical, High, Medium, and Low), you MUST include a "fixPrompt" field — a complete, ready-to-paste prompt that the user can copy directly into Claude, Cursor, or ChatGPT to fix the problem.'
     : 'Do not include fixPrompt fields.';
 
   return `You are VibeGuard AI — a senior code reviewer with 15 years of experience across security engineering, frontend architecture, backend systems, and performance optimization.
@@ -74,13 +74,13 @@ Respond with ONLY a valid JSON object. No markdown fences, no preamble.
     {
       "severity": "Critical | High | Medium | Low",
       "focus": "security | maintainability | correctness | performance",
-      "title": "Specific, descriptive title (e.g. 'URL.createObjectURL never revoked — memory leak')",
-      "description": "Plain language explanation with the EXACT mechanism of the bug. Not generic — explain specifically WHY this code is wrong.",
+      "title": "Specific, descriptive title",
+      "description": "Plain language explanation with the EXACT mechanism of the bug.",
       "riskImpact": "Concrete real-world consequence: what breaks, crashes, leaks, or gets exploited?",
       "goalRelation": "How does this flaw undermine the user's specific goal?",
       "codeLocation": "filename:line-range (e.g. auth.py:45-52)",
       "codeSnippet": "The exact problematic code snippet",
-      "fixPrompt": "Complete copy-pasteable fix prompt for Claude/Cursor — required for Critical, High, and Medium issues"
+      "fixPrompt": "Complete copy-pasteable fix prompt for Claude/Cursor — required for ALL issues"
     }
   ]
 }
@@ -101,9 +101,7 @@ The following code has a [specific issue]. Please:
 
 ## CRITICAL RULES
 - Be SPECIFIC. Reference exact line numbers, exact variable names, exact mechanisms.
-- Never give generic advice like "add error handling" — say exactly WHAT error handling and WHERE.
-- If you see a memory leak, name the specific API being misused and the exact fix.
-- If you see a race condition, describe the exact sequence of events that causes it.
+- Never give generic advice — say exactly WHAT to fix and WHERE.
 - Sort issues: Critical → High → Medium → Low. Maximum 10 issues.
 - If code is genuinely good, say so with high scores and empty issues array.
 - Output MUST be valid JSON only. No extra text outside the JSON.`;
