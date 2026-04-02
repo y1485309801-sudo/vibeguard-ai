@@ -34,7 +34,6 @@ ${focusInstruction}
 - **Race conditions**: async operations that assume ordering, state mutations during async operations, missing loading/disabled states
 - **DOM fragility**: relying on Function.toString(), innerHTML parsing, brittle CSS selectors, hardcoded pixel values that break on different devices
 - **Performance**: unnecessary re-renders, missing debounce/throttle, blocking the main thread, large bundle imports
-- **Accessibility**: missing alt text, no keyboard navigation, poor color contrast
 - **Mobile/responsive**: hardcoded px values that ignore safe-area-inset, fixed positioning issues on iOS
 
 ### Backend-Specific Issues:
@@ -48,10 +47,8 @@ ${focusInstruction}
 ### Code Quality Issues:
 - Logic errors and off-by-one bugs
 - Dead code or unreachable branches
-- Functions doing too many things
 - Missing null/undefined checks at boundaries
 - Misleading variable/function names
-- Copy-paste errors
 
 ## STEP 3 — SCORING
 Rate 0-100 on:
@@ -64,6 +61,7 @@ Respond with ONLY a valid JSON object. No markdown fences, no preamble.
 
 {
   "inferredGoal": "Plain English description of what the developer was trying to do",
+  "heroSummary": "One punchy sentence describing the most critical risk in plain language. Make it concrete and scary but accurate. Examples: 'Attackers can log in without a password via SQL injection', 'Users uploading images will slowly crash your server due to memory leak', 'Any website can steal your users data due to open CORS policy'. If no issues found, write 'No significant issues found — this code looks solid.'",
   "score": {
     "security": number,
     "maintainability": number,
@@ -102,6 +100,7 @@ The following code has a [specific issue]. Please:
 ## CRITICAL RULES
 - Be SPECIFIC. Reference exact line numbers, exact variable names, exact mechanisms.
 - Never give generic advice — say exactly WHAT to fix and WHERE.
+- heroSummary must be ONE sentence, punchy, concrete, non-technical enough for a product manager to understand.
 - Sort issues: Critical → High → Medium → Low. Maximum 10 issues.
 - If code is genuinely good, say so with high scores and empty issues array.
 - Output MUST be valid JSON only. No extra text outside the JSON.`;

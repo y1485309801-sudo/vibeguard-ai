@@ -29,22 +29,23 @@ export interface ReviewIssue {
   severity: Severity;
   focus: FocusArea;
   title: string;
-  description: string;          // Plain language, non-technical
-  riskImpact: string;           // Business / security impact
-  goalRelation: string;         // How this affects the user's inferred goal
-  codeLocation: string;         // e.g. "auth.py:45-52"
-  codeSnippet: string;          // Problematic snippet
-  fixPrompt?: string;           // Copy-paste prompt to fix with Claude/Cursor
+  description: string;
+  riskImpact: string;
+  goalRelation: string;
+  codeLocation: string;
+  codeSnippet: string;
+  fixPrompt?: string;
 }
 
 export interface ReviewScore {
-  security: number;             // 0-100
-  maintainability: number;      // 0-100
-  correctness: number;          // 0-100
+  security: number;
+  maintainability: number;
+  correctness: number;
 }
 
 export interface ReviewResult {
   inferredGoal: string;
+  heroSummary?: string;        // ← new: one punchy sentence for the hero block
   score: ReviewScore;
   top3Risks: string[];
   issues: ReviewIssue[];

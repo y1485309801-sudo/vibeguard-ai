@@ -94,8 +94,6 @@ export async function callLLM(
     });
 
     rawResponse = response.choices[0]?.message?.content ?? '';
-
-    // Log first 1000 chars so we can debug parse failures
     core.warning(`[DEBUG] Raw LLM response (first 1000 chars): ${rawResponse.substring(0, 1000)}`);
 
   } catch (err) {
@@ -122,6 +120,7 @@ export async function callLLM(
 
   return {
     inferredGoal: parsed.inferredGoal ?? 'Unable to infer goal',
+    heroSummary: parsed.heroSummary ?? undefined,
     score: {
       security: clamp(parsed.score?.security ?? 50),
       maintainability: clamp(parsed.score?.maintainability ?? 50),
@@ -135,20 +134,19 @@ export async function callLLM(
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function parseJSON(text: string): any | null {
-  // Step 1: Remove deepseek-reasoner <think>...</think> blocks
+  // Remove deepseek-reasoner <think>...</think> blocks
   let cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 
-  // Step 2: Remove markdown code fences
+  // Remove markdown code fences
   cleaned = cleaned
     .replace(/^```(?:json)?\s*/m, '')
     .replace(/\s*```\s*$/m, '')
     .trim();
 
-  // Step 3: Find first { ... } block
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
   if (start === -1 || end === -1) {
-    core.warning(`[DEBUG] No JSON object found in response. Start: ${start}, End: ${end}`);
+    core.warning(`[DEBUG] No JSON object found. Start: ${start}, End: ${end}`);
     return null;
   }
 
@@ -167,6 +165,7 @@ function buildFallbackResult(diff: string): ReviewResult {
   const patternIssues = runPatternChecks(diff);
   return {
     inferredGoal: 'Could not be determined (LLM unavailable)',
+    heroSummary: 'LLM analysis unavailable — showing pattern scan results only.',
     score: { security: 0, maintainability: 0, correctness: 0 },
     top3Risks: ['LLM analysis unavailable — pattern scan results shown below'],
     issues: patternIssues as ReviewIssue[],

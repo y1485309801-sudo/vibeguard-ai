@@ -36073,7 +36073,6 @@ async function callLLM(config, systemPrompt, userMessage, diff) {
             ],
         });
         rawResponse = response.choices[0]?.message?.content ?? '';
-        // Log first 1000 chars so we can debug parse failures
         core.warning(`[DEBUG] Raw LLM response (first 1000 chars): ${rawResponse.substring(0, 1000)}`);
     }
     catch (err) {
@@ -36095,6 +36094,7 @@ async function callLLM(config, systemPrompt, userMessage, diff) {
     }
     return {
         inferredGoal: parsed.inferredGoal ?? 'Unable to infer goal',
+        heroSummary: parsed.heroSummary ?? undefined,
         score: {
             security: clamp(parsed.score?.security ?? 50),
             maintainability: clamp(parsed.score?.maintainability ?? 50),
@@ -36107,18 +36107,17 @@ async function callLLM(config, systemPrompt, userMessage, diff) {
 }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function parseJSON(text) {
-    // Step 1: Remove deepseek-reasoner <think>...</think> blocks
+    // Remove deepseek-reasoner <think>...</think> blocks
     let cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-    // Step 2: Remove markdown code fences
+    // Remove markdown code fences
     cleaned = cleaned
         .replace(/^```(?:json)?\s*/m, '')
         .replace(/\s*```\s*$/m, '')
         .trim();
-    // Step 3: Find first { ... } block
     const start = cleaned.indexOf('{');
     const end = cleaned.lastIndexOf('}');
     if (start === -1 || end === -1) {
-        core.warning(`[DEBUG] No JSON object found in response. Start: ${start}, End: ${end}`);
+        core.warning(`[DEBUG] No JSON object found. Start: ${start}, End: ${end}`);
         return null;
     }
     const jsonStr = cleaned.slice(start, end + 1);
@@ -36135,6 +36134,7 @@ function buildFallbackResult(diff) {
     const patternIssues = runPatternChecks(diff);
     return {
         inferredGoal: 'Could not be determined (LLM unavailable)',
+        heroSummary: 'LLM analysis unavailable — showing pattern scan results only.',
         score: { security: 0, maintainability: 0, correctness: 0 },
         top3Risks: ['LLM analysis unavailable — pattern scan results shown below'],
         issues: patternIssues,
@@ -36165,22 +36165,30 @@ function renderMarkdown(result, includePrompts) {
     const lines = [];
     const criticalAndHigh = result.issues.filter((i) => i.severity === 'Critical' || i.severity === 'High');
     const topIssue = criticalAndHigh[0];
-    // ── Hero: problem + code contrast + fix prompt ───────────────────────────
+    const hasIssues = result.issues.length > 0;
+    // ── Hero block ───────────────────────────────────────────────────────────
     if (topIssue) {
         const emoji = SEVERITY_EMOJI[topIssue.severity];
-        lines.push(`## ${emoji} This code works — but can be exploited`);
+        // Line 1: punchy one-liner from AI
+        lines.push(`## ${emoji} This code works — but ${result.heroSummary ?? topIssue.riskImpact}`);
         lines.push('');
+        // Line 2-3: contrast
+        lines.push('🤖 **AI thinks this is fine**');
+        lines.push('🧠 **VibeGuard disagrees**');
+        lines.push('');
+        // Code snippet
         if (topIssue.codeSnippet && topIssue.codeSnippet !== '(see diff for details)') {
-            lines.push('**🤖 AI wrote this:**');
             lines.push('```');
             lines.push(topIssue.codeSnippet);
             lines.push('```');
             lines.push('');
         }
-        lines.push(`**🧠 VibeGuard noticed:** ${topIssue.riskImpact}`);
+        // Impact
+        lines.push(`💥 **Impact:** ${topIssue.riskImpact}`);
         lines.push('');
+        // Fix prompt
         if (includePrompts && topIssue.fixPrompt) {
-            lines.push('**🔥 Fix it now — copy and paste into Claude or Cursor:**');
+            lines.push('🔥 **Fix in 1 prompt** (copy to Claude or Cursor):');
             lines.push('');
             lines.push('```');
             lines.push(topIssue.fixPrompt);
@@ -36196,8 +36204,12 @@ function renderMarkdown(result, includePrompts) {
     lines.push('---');
     lines.push('');
     // ── Full Report (collapsed) ──────────────────────────────────────────────
+    const issueCount = result.issues.length;
+    const summaryLabel = hasIssues
+        ? `📊 Full analysis — ${issueCount} issue${issueCount > 1 ? 's' : ''} found (security, maintainability, risks)`
+        : `📊 Full analysis — no issues found`;
     lines.push('<details>');
-    lines.push('<summary>📊 <strong>Full Report — Goal, Scores & All Issues</strong></summary>');
+    lines.push(`<summary>${summaryLabel}</summary>`);
     lines.push('');
     lines.push('### 🎯 Inferred Goal');
     lines.push(result.inferredGoal);
@@ -36252,9 +36264,9 @@ function renderIssue(issue, num, includePrompts) {
     lines.push('');
     lines.push(`**📝 What's happening:** ${issue.description}`);
     lines.push('');
-    lines.push(`**💥 What could go wrong:** ${issue.riskImpact}`);
+    lines.push(`**💥 Impact:** ${issue.riskImpact}`);
     lines.push('');
-    lines.push(`**🎯 Impact on your goal:** ${issue.goalRelation}`);
+    lines.push(`**🎯 Goal relation:** ${issue.goalRelation}`);
     lines.push('');
     if (issue.codeSnippet && issue.codeSnippet !== '(see diff for details)') {
         lines.push('**🤖 AI wrote this → VibeGuard noticed:**');
@@ -36263,7 +36275,6 @@ function renderIssue(issue, num, includePrompts) {
         lines.push('```');
         lines.push('');
     }
-    // ALL severity levels get fix prompts (collapsed) — user decides what to fix
     if (includePrompts && issue.fixPrompt) {
         lines.push('<details>');
         lines.push('<summary>🔧 <strong>Fix Prompt for Claude/Cursor</strong></summary>');
@@ -36324,7 +36335,6 @@ ${focusInstruction}
 - **Race conditions**: async operations that assume ordering, state mutations during async operations, missing loading/disabled states
 - **DOM fragility**: relying on Function.toString(), innerHTML parsing, brittle CSS selectors, hardcoded pixel values that break on different devices
 - **Performance**: unnecessary re-renders, missing debounce/throttle, blocking the main thread, large bundle imports
-- **Accessibility**: missing alt text, no keyboard navigation, poor color contrast
 - **Mobile/responsive**: hardcoded px values that ignore safe-area-inset, fixed positioning issues on iOS
 
 ### Backend-Specific Issues:
@@ -36338,10 +36348,8 @@ ${focusInstruction}
 ### Code Quality Issues:
 - Logic errors and off-by-one bugs
 - Dead code or unreachable branches
-- Functions doing too many things
 - Missing null/undefined checks at boundaries
 - Misleading variable/function names
-- Copy-paste errors
 
 ## STEP 3 — SCORING
 Rate 0-100 on:
@@ -36354,6 +36362,7 @@ Respond with ONLY a valid JSON object. No markdown fences, no preamble.
 
 {
   "inferredGoal": "Plain English description of what the developer was trying to do",
+  "heroSummary": "One punchy sentence describing the most critical risk in plain language. Make it concrete and scary but accurate. Examples: 'Attackers can log in without a password via SQL injection', 'Users uploading images will slowly crash your server due to memory leak', 'Any website can steal your users data due to open CORS policy'. If no issues found, write 'No significant issues found — this code looks solid.'",
   "score": {
     "security": number,
     "maintainability": number,
@@ -36392,6 +36401,7 @@ The following code has a [specific issue]. Please:
 ## CRITICAL RULES
 - Be SPECIFIC. Reference exact line numbers, exact variable names, exact mechanisms.
 - Never give generic advice — say exactly WHAT to fix and WHERE.
+- heroSummary must be ONE sentence, punchy, concrete, non-technical enough for a product manager to understand.
 - Sort issues: Critical → High → Medium → Low. Maximum 10 issues.
 - If code is genuinely good, say so with high scores and empty issues array.
 - Output MUST be valid JSON only. No extra text outside the JSON.`;

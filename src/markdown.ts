@@ -16,27 +16,36 @@ export function renderMarkdown(result: ReviewResult, includePrompts: boolean): s
     (i) => i.severity === 'Critical' || i.severity === 'High'
   );
   const topIssue = criticalAndHigh[0];
+  const hasIssues = result.issues.length > 0;
 
-  // ── Hero: problem + code contrast + fix prompt ───────────────────────────
+  // ── Hero block ───────────────────────────────────────────────────────────
   if (topIssue) {
     const emoji = SEVERITY_EMOJI[topIssue.severity];
 
-    lines.push(`## ${emoji} This code works — but can be exploited`);
+    // Line 1: punchy one-liner from AI
+    lines.push(`## ${emoji} This code works — but ${result.heroSummary ?? topIssue.riskImpact}`);
     lines.push('');
 
+    // Line 2-3: contrast
+    lines.push('🤖 **AI thinks this is fine**');
+    lines.push('🧠 **VibeGuard disagrees**');
+    lines.push('');
+
+    // Code snippet
     if (topIssue.codeSnippet && topIssue.codeSnippet !== '(see diff for details)') {
-      lines.push('**🤖 AI wrote this:**');
       lines.push('```');
       lines.push(topIssue.codeSnippet);
       lines.push('```');
       lines.push('');
     }
 
-    lines.push(`**🧠 VibeGuard noticed:** ${topIssue.riskImpact}`);
+    // Impact
+    lines.push(`💥 **Impact:** ${topIssue.riskImpact}`);
     lines.push('');
 
+    // Fix prompt
     if (includePrompts && topIssue.fixPrompt) {
-      lines.push('**🔥 Fix it now — copy and paste into Claude or Cursor:**');
+      lines.push('🔥 **Fix in 1 prompt** (copy to Claude or Cursor):');
       lines.push('');
       lines.push('```');
       lines.push(topIssue.fixPrompt);
@@ -54,8 +63,13 @@ export function renderMarkdown(result: ReviewResult, includePrompts: boolean): s
   lines.push('');
 
   // ── Full Report (collapsed) ──────────────────────────────────────────────
+  const issueCount = result.issues.length;
+  const summaryLabel = hasIssues
+    ? `📊 Full analysis — ${issueCount} issue${issueCount > 1 ? 's' : ''} found (security, maintainability, risks)`
+    : `📊 Full analysis — no issues found`;
+
   lines.push('<details>');
-  lines.push('<summary>📊 <strong>Full Report — Goal, Scores & All Issues</strong></summary>');
+  lines.push(`<summary>${summaryLabel}</summary>`);
   lines.push('');
 
   lines.push('### 🎯 Inferred Goal');
@@ -119,9 +133,9 @@ function renderIssue(issue: ReviewIssue, num: number, includePrompts: boolean): 
   lines.push('');
   lines.push(`**📝 What's happening:** ${issue.description}`);
   lines.push('');
-  lines.push(`**💥 What could go wrong:** ${issue.riskImpact}`);
+  lines.push(`**💥 Impact:** ${issue.riskImpact}`);
   lines.push('');
-  lines.push(`**🎯 Impact on your goal:** ${issue.goalRelation}`);
+  lines.push(`**🎯 Goal relation:** ${issue.goalRelation}`);
   lines.push('');
 
   if (issue.codeSnippet && issue.codeSnippet !== '(see diff for details)') {
@@ -132,7 +146,6 @@ function renderIssue(issue: ReviewIssue, num: number, includePrompts: boolean): 
     lines.push('');
   }
 
-  // ALL severity levels get fix prompts (collapsed) — user decides what to fix
   if (includePrompts && issue.fixPrompt) {
     lines.push('<details>');
     lines.push('<summary>🔧 <strong>Fix Prompt for Claude/Cursor</strong></summary>');
