@@ -17,56 +17,47 @@ export function renderMarkdown(result: ReviewResult, includePrompts: boolean): s
   );
   const topIssue = criticalAndHigh[0];
 
-  // ── Hero Banner ─────────────────────────────────────────────────────────
+  // ── Hero: problem + code contrast + fix prompt ───────────────────────────
   if (topIssue) {
     const emoji = SEVERITY_EMOJI[topIssue.severity];
-    lines.push(`## ${emoji} This code works — but has a problem that needs fixing`);
+
+    lines.push(`## ${emoji} This code works — but can be exploited`);
     lines.push('');
-    lines.push(`> **${topIssue.title}**`);
-    lines.push(`> ${topIssue.description}`);
+
+    // Code contrast
+    if (topIssue.codeSnippet && topIssue.codeSnippet !== '(see diff for details)') {
+      lines.push('**🤖 AI wrote this:**');
+      lines.push('```');
+      lines.push(topIssue.codeSnippet);
+      lines.push('```');
+      lines.push('');
+    }
+
+    lines.push(`**🧠 VibeGuard noticed:** ${topIssue.riskImpact}`);
     lines.push('');
+
+    // Fix prompt right after
+    if (includePrompts && topIssue.fixPrompt) {
+      lines.push('**🔥 Fix it now — copy and paste into Claude or Cursor:**');
+      lines.push('');
+      lines.push('```');
+      lines.push(topIssue.fixPrompt);
+      lines.push('```');
+    }
+
   } else {
     lines.push('## ✅ This code looks good!');
     lines.push('');
     lines.push('> No critical or high severity issues found. Nice work! 🎉');
-    lines.push('');
   }
 
-  // ── Top Fix Prompt (above the fold) ─────────────────────────────────────
-  if (topIssue && includePrompts && topIssue.fixPrompt) {
-    lines.push('### 🔥 Fix it with this prompt — copy and paste into Claude or Cursor');
-    lines.push('');
-    lines.push('```');
-    lines.push(topIssue.fixPrompt);
-    lines.push('```');
-    lines.push('');
-    lines.push('---');
-    lines.push('');
-  }
-
-  // ── AI wrote this → VibeGuard noticed ────────────────────────────────────
-  if (topIssue && topIssue.codeSnippet && topIssue.codeSnippet !== '(see diff for details)') {
-    lines.push('<details>');
-    lines.push('<summary>🤖 <strong>AI wrote this → VibeGuard noticed a problem</strong></summary>');
-    lines.push('');
-    lines.push('**🤖 AI generated this code:**');
-    lines.push('```');
-    lines.push(topIssue.codeSnippet);
-    lines.push('```');
-    lines.push('');
-    lines.push(`**🧠 VibeGuard noticed:** ${topIssue.riskImpact}`);
-    lines.push('');
-    lines.push(`**🎯 Why it matters for your goal:** ${topIssue.goalRelation}`);
-    lines.push('');
-    lines.push('</details>');
-    lines.push('');
-    lines.push('---');
-    lines.push('');
-  }
+  lines.push('');
+  lines.push('---');
+  lines.push('');
 
   // ── Full Report (collapsed) ──────────────────────────────────────────────
   lines.push('<details>');
-  lines.push('<summary>📊 <strong>Full Report — Scores, All Issues & Details</strong></summary>');
+  lines.push('<summary>📊 <strong>Full Report — Goal, Scores & All Issues</strong></summary>');
   lines.push('');
 
   lines.push('### 🎯 Inferred Goal');
@@ -143,7 +134,6 @@ function renderIssue(issue: ReviewIssue, num: number, includePrompts: boolean): 
     lines.push('');
   }
 
-  // Critical, High, Medium all get fix prompts; Low does not
   if (
     includePrompts &&
     issue.fixPrompt &&
